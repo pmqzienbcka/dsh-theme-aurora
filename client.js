@@ -81,10 +81,11 @@ window.__ModuleLoader__.load({
      * conversation column, so the picture follows the layout when the sidebar
      * collapses or the window is resized; `x`/`y` are the live pixel position for
      * the current frame and are recomputed from the ratios on every render.
-     * `rot` is the rotation in degrees around the picture's centre.
+     * `rot` is the rotation in degrees around the picture's centre, `flip` mirrors
+     * it horizontally in its own frame.
      */
     function placementDefaults(id) {
-      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100, rot: 0 }
+      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100, rot: 0, flip: false }
     }
 
     function defaults() {
@@ -149,6 +150,7 @@ window.__ModuleLoader__.load({
           rx: Number.isFinite(item.rx) ? item.rx : null,
           ry: Number.isFinite(item.ry) ? item.ry : null,
           rot: Number.isFinite(item.rot) ? clamp(Math.round(item.rot), -180, 180) : 0,
+          flip: item.flip === true,
           scale: Number.isFinite(item.scale) ? clamp(Math.round(item.scale), 10, 400) : 100,
         }))
       return out
@@ -1148,11 +1150,12 @@ window.__ModuleLoader__.load({
           placementDelete(live)
           return
         }
-        if (handle === 'rotate-reset') {
+        if (handle === 'flip') {
           event.preventDefault()
-          live.rot = 0
+          live.flip = live.flip !== true
           applyPlacementStyle(node, live)
           persistPlacements()
+          renderPlacements()
           return
         }
         event.preventDefault()
@@ -1208,8 +1211,14 @@ window.__ModuleLoader__.load({
           live.x = Math.round(Math.min(Math.max(originX + dx, -200), window.innerWidth - 40))
           live.y = Math.round(Math.min(Math.max(originY + dy, -200), window.innerHeight - 40))
         } else {
+          // Resize along the picture's own horizontal axis: once it is rotated
+          // or mirrored, dragging the handle right in viewport px is not what
+          // "grow" means, and the handle itself sits on the other side.
+          const angle = (rotAccum * Math.PI) / 180
+          const sign = live.flip ? -1 : 1
+          const localDx = (dx * Math.cos(angle) + dy * Math.sin(angle)) * sign
           const width = PLACEMENT_BASE_WIDTH * (originScale / 100)
-          const next = ((width + dx) / PLACEMENT_BASE_WIDTH) * 100
+          const next = ((width + localDx) / PLACEMENT_BASE_WIDTH) * 100
           live.scale = Math.round(Math.min(Math.max(next, 10), 400))
         }
         applyPlacementStyle(node, live)
@@ -1228,9 +1237,14 @@ window.__ModuleLoader__.load({
       node.style.left = item.x + 'px'
       node.style.top = item.y + 'px'
       node.style.width = Math.round(PLACEMENT_BASE_WIDTH * (item.scale / 100)) + 'px'
-      // Rotation is about the picture's own centre, identical in arrange mode
-      // and once applied, so the hand-placed position never shifts on exit.
-      node.style.transform = item.rot ? 'rotate(' + item.rot + 'deg)' : 'none'
+      // Both transforms act about the picture's own centre and compose the same
+      // way in arrange mode and once applied, so hand-placed positions never
+      // shift on exit. `scaleX(-1)` mirrors in the picture's own frame, which is
+      // what "horizontal flip" means for a picture that is also rotated.
+      const parts = []
+      if (item.rot) parts.push('rotate(' + item.rot + 'deg)')
+      if (item.flip) parts.push('scaleX(-1)')
+      node.style.transform = parts.length > 0 ? parts.join(' ') : 'none'
     }
 
     function renderPlacements() {
@@ -1277,14 +1291,14 @@ window.__ModuleLoader__.load({
             'font:13px/20px sans-serif;text-align:center;cursor:grab'
           node.appendChild(rotate)
 
-          const reset = document.createElement('div')
-          reset.dataset.auroraHandle = 'rotate-reset'
-          reset.textContent = '⟲'
-          reset.title = '复位旋转'
-          reset.style.cssText = 'position:absolute;left:-9px;bottom:-9px;width:20px;height:20px;border-radius:50%;' +
+          const flip = document.createElement('div')
+          flip.dataset.auroraHandle = 'flip'
+          flip.textContent = '⇄'
+          flip.title = '水平翻转'
+          flip.style.cssText = 'position:absolute;left:-9px;bottom:-9px;width:20px;height:20px;border-radius:50%;' +
             'background:rgba(20,22,28,.92);color:#fff;box-shadow:0 0 0 1px rgba(255,255,255,.3);' +
             'font:13px/20px sans-serif;text-align:center;cursor:pointer'
-          node.appendChild(reset)
+          node.appendChild(flip)
 
           const bin = document.createElement('div')
           bin.dataset.auroraHandle = 'delete'
@@ -1294,6 +1308,16 @@ window.__ModuleLoader__.load({
           node.appendChild(bin)
         } else if (!editing && hasHandles) {
           for (const handle of node.querySelectorAll('[data-aurora-handle]')) handle.remove()
+        }
+        if (editing) {
+          // The flip is a state, not a one-shot action: keep the button lit while
+          // the picture is mirrored so the toggle is readable at a glance.
+          const flip = node.querySelector('[data-aurora-handle="flip"]')
+          if (flip) {
+            const on = item.flip === true
+            flip.style.background = on ? '#4c8dff' : 'rgba(20,22,28,.92)'
+            flip.title = on ? '已水平翻转（点击取消）' : '水平翻转'
+          }
         }
       }
       updateLayoutBar(editing)
@@ -1315,7 +1339,7 @@ window.__ModuleLoader__.load({
           'background:rgba(20,22,28,.92);border:0.5px solid rgba(255,255,255,.14);' +
           'box-shadow:0 8px 24px rgba(0,0,0,.35);font:12px/1.4 system-ui,sans-serif;color:#fff'
         const label = document.createElement('span')
-        label.textContent = '拖动移动 · 右下角缩放 · 左上角 ⟳ 旋转 · ⟲ 复位 · × 删除'
+        label.textContent = '拖动移动 · 右下角缩放 · 左上角 ⟳ 旋转 · 左下角 ⇄ 翻转 · × 删除'
         label.style.cssText = 'color:rgba(255,255,255,.7);white-space:nowrap'
         const done = document.createElement('button')
         done.textContent = '应用布局'
@@ -1903,22 +1927,23 @@ window.__ModuleLoader__.load({
         })
       }
 
-      /** Drop every picture back to 0° without touching position or size. */
-      const resetRotations = () => {
+      /** Drop every picture back to 0° and un-mirror it; position and size stay. */
+      const resetTransforms = () => {
         let changed = 0
         for (const item of store.config.placements) {
-          if (!item.rot) continue
+          if (!item.rot && !item.flip) continue
           item.rot = 0
+          item.flip = false
           changed += 1
         }
         if (changed === 0) {
-          showToast('没有需要复位的旋转')
+          showToast('没有需要复位的旋转或翻转')
           return
         }
         persistPlacements()
         renderPlacements()
         store.notify()
-        showToast('已复位 ' + changed + ' 张图片的旋转')
+        showToast('已复位 ' + changed + ' 张图片的旋转与翻转')
       }
 
       const previewOf = (surface) => {
@@ -2088,7 +2113,7 @@ window.__ModuleLoader__.load({
         ),
 
         h(Section, { title: '图片层' },
-          h('div', { className: 'aur-hint' }, '添加后进入布局模式：拖动移动、右下角缩放、左上角 ⟳ 旋转、⟲ 复位旋转、× 删除；只在窗口最大化时显示，位置按会话列比例保存，收起侧边栏会跟着移动'),
+          h('div', { className: 'aur-hint' }, '添加后进入布局模式：拖动移动、右下角缩放、左上角 ⟳ 旋转、左下角 ⇄ 水平翻转、× 删除；只在窗口最大化时显示，位置按会话列比例保存，收起侧边栏会跟着移动'),
           h(Row, { label: '添加' },
             h('button', {
               className: 'aur-btn',
@@ -2122,9 +2147,9 @@ window.__ModuleLoader__.load({
             }),
             h('button', { className: 'aur-btn', onClick: clearPlacements }, '清除所有图片'),
           ),
-          h(Row, { label: '旋转' },
-            h('button', { className: 'aur-btn', onClick: resetRotations }, '全部复位'),
-            h('span', { className: 'aur-hint' }, '布局模式里拖左上角 ⟳ 旋转，拖到直角附近会自动吸附'),
+          h(Row, { label: '变换' },
+            h('button', { className: 'aur-btn', onClick: resetTransforms }, '全部复位'),
+            h('span', { className: 'aur-hint' }, '拖左上角 ⟳ 旋转（直角自动吸附），左下角 ⇄ 水平翻转'),
           ),
         ),
 
