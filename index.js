@@ -13,7 +13,7 @@
  */
 import { listFonts } from './lib/fonts.mjs'
 
-export const name = '@local/dsh-theme-aurora'
+export const name = 'dsh-theme-aurora'
 
 function sendJson(res, status, value) {
   res.writeHead(status, {

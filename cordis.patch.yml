@@ -2,4 +2,4 @@
 # all theme work happens in the Client module (`client.js`).
 - insert:
     - id: theme-aurora
-      name: '@local/dsh-theme-aurora'
+      name: 'dsh-theme-aurora'

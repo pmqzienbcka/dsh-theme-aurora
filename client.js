@@ -11,7 +11,7 @@
  * injected stylesheet instead of being hard-coded.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-theme-aurora',
+  id: 'dsh-theme-aurora',
   factory(require) {
     const React = require('react')
     const h = React.createElement

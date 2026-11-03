@@ -2,3 +2,5 @@ node_modules/
 .tmp/
 *.log
 .npm-cache/
+.git-credentials-tmp
+.gh-cred.cmd
