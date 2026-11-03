@@ -76,9 +76,14 @@ window.__ModuleLoader__.load({
       return { enabled: false, blur: 16 }
     }
 
-    /** One freely placed picture: position in viewport px plus a width scale. */
+    /**
+     * One freely placed picture. `rx`/`ry` are its position as a fraction of the
+     * conversation column, so the picture follows the layout when the sidebar
+     * collapses or the window is resized; `x`/`y` are the live pixel position for
+     * the current frame and are recomputed from the ratios on every render.
+     */
     function placementDefaults(id) {
-      return { id, x: 120, y: 120, scale: 100 }
+      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100 }
     }
 
     function defaults() {
@@ -138,6 +143,10 @@ window.__ModuleLoader__.load({
           id: item.id,
           x: Number.isFinite(item.x) ? Math.round(item.x) : 120,
           y: Number.isFinite(item.y) ? Math.round(item.y) : 120,
+          // Older configs stored pixels only; the ratio is filled in from the
+          // current column on the first render and persisted after that.
+          rx: Number.isFinite(item.rx) ? item.rx : null,
+          ry: Number.isFinite(item.ry) ? item.ry : null,
           scale: Number.isFinite(item.scale) ? clamp(Math.round(item.scale), 10, 400) : 100,
         }))
       return out
@@ -535,6 +544,7 @@ window.__ModuleLoader__.load({
       }
 
       markGlassTargets(center, sidebar)
+      watchColumn(center)
       return { center, sidebar, frame }
     }
 
@@ -984,6 +994,33 @@ window.__ModuleLoader__.load({
 
     const PLACEMENT_BASE_WIDTH = 240
 
+    /**
+     * A sidebar collapse changes the column's left edge and width without a
+     * window resize, so the window listener alone never saw it. Watching the
+     * column and the frame keeps the placed pictures on the layout.
+     */
+    let columnObserver = null
+    let columnObserverTarget = null
+
+    function watchColumn(center) {
+      if (!center || typeof ResizeObserver === 'undefined') return
+      if (columnObserverTarget === center) return
+      if (!columnObserver) {
+        columnObserver = new ResizeObserver(() => {
+          try {
+            renderPlacements()
+          } catch {
+            /* placement pass is best-effort */
+          }
+        })
+      }
+      columnObserver.disconnect()
+      columnObserver.observe(center)
+      const frame = document.querySelector('[data-aurora-surface="frame"]')
+      if (frame) columnObserver.observe(frame)
+      columnObserverTarget = center
+    }
+
     /** A fullscreen window or a maximized one both leave room for the pictures. */
     function windowIsMaximized() {
       if (document.documentElement.hasAttribute('data-fullscreen')) return true
@@ -994,11 +1031,57 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The conversation column inside the frame, expressed in the coordinate
+     * space the pictures use: absolutely positioned children of the frame
+     * resolve `left/top` against its padding box.
+     */
+    function columnBox() {
+      const frame = document.querySelector('[data-aurora-surface="frame"]')
+      const center = document.querySelector('[data-aurora-surface="center"]')
+      if (!frame || !center) return null
+      const frameRect = frame.getBoundingClientRect()
+      const centerRect = center.getBoundingClientRect()
+      if (centerRect.width <= 0 || centerRect.height <= 0) return null
+      return {
+        x: centerRect.left - (frameRect.left + frame.clientLeft),
+        y: centerRect.top - (frameRect.top + frame.clientTop),
+        width: centerRect.width,
+        height: centerRect.height,
+      }
+    }
+
+    /** Turn one picture's live pixel position into column-relative ratios. */
+    function updatePlacementRatios(item, box) {
+      if (!box) return
+      item.rx = (item.x - box.x) / box.width
+      item.ry = (item.y - box.y) / box.height
+    }
+
+    /**
+     * Re-project every picture from its ratios onto the current column, so the
+     * sidebar collapsing (or the window resizing) carries the pictures with the
+     * layout instead of leaving them where they were dropped.
+     */
+    function projectPlacements(box) {
+      if (!box) return
+      for (const item of store.config.placements) {
+        if (!Number.isFinite(item.rx) || !Number.isFinite(item.ry)) {
+          updatePlacementRatios(item, box)
+          continue
+        }
+        item.x = Math.round(Math.min(Math.max(box.x + item.rx * box.width, -200), window.innerWidth - 40))
+        item.y = Math.round(Math.min(Math.max(box.y + item.ry * box.height, -200), window.innerHeight - 40))
+      }
+    }
+
+    /**
      * Save the placement list without touching the rest of the config. The
      * items must stay the same objects the page has bound to: `sanitize`
      * returns copies, and a later drag would then move a detached object.
      */
     function persistPlacements() {
+      const box = columnBox()
+      for (const item of store.config.placements) updatePlacementRatios(item, box)
       saveConfig(store.config)
       store.notify()
     }
@@ -1104,6 +1187,9 @@ window.__ModuleLoader__.load({
     function renderPlacements() {
       const editing = store.editing === true
       const visible = store.config.enabled && windowIsMaximized()
+      // Follow the column before touching any node: a sidebar collapse changes
+      // the column's left edge and width without a window resize.
+      projectPlacements(columnBox())
       const wanted = new Set(store.config.placements.map((item) => item.id))
       for (const node of document.querySelectorAll('[data-aurora-placement]')) {
         if (!wanted.has(node.dataset.auroraPlacement)) node.remove()
@@ -1917,7 +2003,7 @@ window.__ModuleLoader__.load({
         ),
 
         h(Section, { title: '图片层' },
-          h('div', { className: 'aur-hint' }, '添加后进入布局模式：在页面上直接拖动移动、拖右下角缩放、点右上角 × 删除；只在窗口最大化时显示'),
+          h('div', { className: 'aur-hint' }, '添加后进入布局模式：在页面上直接拖动移动、拖右下角缩放、点右上角 × 删除；只在窗口最大化时显示，位置按会话列比例保存，收起侧边栏会跟着移动'),
           h(Row, { label: '添加' },
             h('button', {
               className: 'aur-btn',
@@ -2101,6 +2187,9 @@ window.__ModuleLoader__.load({
             observer.disconnect()
             fullscreenObserver.disconnect()
             window.removeEventListener('resize', onResize)
+            columnObserver?.disconnect()
+            columnObserver = null
+            columnObserverTarget = null
             stopMarks()
             clearRuntime()
             releaseUrls()
