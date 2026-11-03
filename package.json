@@ -12,6 +12,14 @@
     "glass"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pmqzienbcka/dsh-theme-aurora.git"
+  },
+  "homepage": "https://github.com/pmqzienbcka/dsh-theme-aurora#readme",
+  "bugs": {
+    "url": "https://github.com/pmqzienbcka/dsh-theme-aurora/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
