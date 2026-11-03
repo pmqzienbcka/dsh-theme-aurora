@@ -85,7 +85,7 @@ window.__ModuleLoader__.load({
      * it horizontally in its own frame.
      */
     function placementDefaults(id) {
-      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100, rot: 0, flip: false }
+      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100, rot: 0, flip: false, anchor: 'ratio', edge: 0 }
     }
 
     function defaults() {
@@ -151,6 +151,10 @@ window.__ModuleLoader__.load({
           ry: Number.isFinite(item.ry) ? item.ry : null,
           rot: Number.isFinite(item.rot) ? clamp(Math.round(item.rot), -180, 180) : 0,
           flip: item.flip === true,
+          // `right` keeps the picture on the column's right edge, `ratio` follows
+          // it proportionally; `edge` is the px overshoot past that edge.
+          anchor: item.anchor === 'right' ? 'right' : 'ratio',
+          edge: Number.isFinite(item.edge) ? Math.round(item.edge) : 0,
           scale: Number.isFinite(item.scale) ? clamp(Math.round(item.scale), 10, 400) : 100,
         }))
       return out
@@ -1061,19 +1065,33 @@ window.__ModuleLoader__.load({
       item.ry = (item.y - box.y) / box.height
     }
 
+    /** Width the picture occupies at its current scale. */
+    function placementWidth(item) {
+      return Math.round(PLACEMENT_BASE_WIDTH * (item.scale / 100))
+    }
+
     /**
-     * Re-project every picture from its ratios onto the current column, so the
-     * sidebar collapsing (or the window resizing) carries the pictures with the
-     * layout instead of leaving them where they were dropped.
+     * Re-project every picture onto the current column, so the sidebar
+     * collapsing (or the window resizing) carries the pictures with the layout
+     * instead of leaving them where they were dropped.
+     *
+     * A picture whose right edge sat on (or past) the column's right edge is
+     * anchored to that edge instead: collapsing the sidebar widens the column
+     * towards the left, and sliding such a picture right would push it out of
+     * the window. Right-anchored pictures therefore stay exactly where they are.
      */
     function projectPlacements(box) {
       if (!box) return
+      const columnRight = box.x + box.width
       for (const item of store.config.placements) {
         if (!Number.isFinite(item.rx) || !Number.isFinite(item.ry)) {
           updatePlacementRatios(item, box)
-          continue
         }
-        item.x = Math.round(Math.min(Math.max(box.x + item.rx * box.width, -200), window.innerWidth - 40))
+        if (item.anchor === 'right') {
+          item.x = Math.round(columnRight + (item.edge ?? 0) - placementWidth(item))
+        } else {
+          item.x = Math.round(Math.min(Math.max(box.x + item.rx * box.width, -200), window.innerWidth - 40))
+        }
         item.y = Math.round(Math.min(Math.max(box.y + item.ry * box.height, -200), window.innerHeight - 40))
       }
     }
@@ -1085,7 +1103,23 @@ window.__ModuleLoader__.load({
      */
     function persistPlacements() {
       const box = columnBox()
-      for (const item of store.config.placements) updatePlacementRatios(item, box)
+      if (box) {
+        const columnRight = box.x + box.width
+        for (const item of store.config.placements) {
+          // Decide the anchor from where the picture now sits: flush against (or
+          // beyond) the column's right edge means it should follow that edge,
+          // anything else follows the column by ratio.
+          const overflow = item.x + placementWidth(item) - columnRight
+          if (overflow >= -2) {
+            item.anchor = 'right'
+            item.edge = Math.round(overflow)
+          } else {
+            item.anchor = 'ratio'
+            item.edge = 0
+          }
+          updatePlacementRatios(item, box)
+        }
+      }
       saveConfig(store.config)
       store.notify()
     }
@@ -1266,8 +1300,10 @@ window.__ModuleLoader__.load({
         bindPlacement(node, item)
         applyPlacementStyle(node, item)
         // Arranging happens above the content so the pointer reaches the
-        // picture; once applied it drops to the seat under the chat.
-        node.style.zIndex = editing ? '5' : '0'
+        // picture; once applied it drops to the seat under the chat. 20 is above
+        // the composer seat (7, or 9 with its menu open), which otherwise
+        // swallows the clicks — the handles below the input box were dead.
+        node.style.zIndex = editing ? '20' : '0'
         node.style.display = editing || visible ? 'block' : 'none'
         node.style.outline = editing ? '1px dashed rgba(255,255,255,.55)' : 'none'
         node.style.cursor = editing ? 'move' : 'default'
