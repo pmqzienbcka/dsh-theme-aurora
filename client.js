@@ -81,9 +81,10 @@ window.__ModuleLoader__.load({
      * conversation column, so the picture follows the layout when the sidebar
      * collapses or the window is resized; `x`/`y` are the live pixel position for
      * the current frame and are recomputed from the ratios on every render.
+     * `rot` is the rotation in degrees around the picture's centre.
      */
     function placementDefaults(id) {
-      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100 }
+      return { id, x: 120, y: 120, rx: null, ry: null, scale: 100, rot: 0 }
     }
 
     function defaults() {
@@ -147,6 +148,7 @@ window.__ModuleLoader__.load({
           // current column on the first render and persisted after that.
           rx: Number.isFinite(item.rx) ? item.rx : null,
           ry: Number.isFinite(item.ry) ? item.ry : null,
+          rot: Number.isFinite(item.rot) ? clamp(Math.round(item.rot), -180, 180) : 0,
           scale: Number.isFinite(item.scale) ? clamp(Math.round(item.scale), 10, 400) : 100,
         }))
       return out
@@ -1132,30 +1134,74 @@ window.__ModuleLoader__.load({
       let originX = 0
       let originY = 0
       let originScale = 100
+      let rotAccum = 0
+      let lastAngle = 0
+      let centreX = 0
+      let centreY = 0
 
       node.addEventListener('pointerdown', (event) => {
         if (!store.editing || event.button !== 0) return
         const live = currentPlacement(item)
-        const onHandle = event.target?.dataset?.auroraHandle === 'resize'
-        const onDelete = event.target?.dataset?.auroraHandle === 'delete'
-        if (onDelete) {
+        const handle = event.target?.dataset?.auroraHandle
+        if (handle === 'delete') {
           event.preventDefault()
           placementDelete(live)
           return
         }
+        if (handle === 'rotate-reset') {
+          event.preventDefault()
+          live.rot = 0
+          applyPlacementStyle(node, live)
+          persistPlacements()
+          return
+        }
         event.preventDefault()
         node.setPointerCapture?.(event.pointerId)
-        mode = onHandle ? 'resize' : 'move'
         startX = event.clientX
         startY = event.clientY
         originX = live.x
         originY = live.y
         originScale = live.scale
+        rotAccum = live.rot ?? 0
+        if (handle === 'rotate') {
+          mode = 'rotate'
+          // Rotate around the picture's own centre, measured in viewport px.
+          const box = node.getBoundingClientRect()
+          centreX = box.left + box.width / 2
+          centreY = box.top + box.height / 2
+          lastAngle = Math.atan2(event.clientY - centreY, event.clientX - centreX) * 180 / Math.PI
+        } else {
+          mode = handle === 'resize' ? 'resize' : 'move'
+        }
       })
 
       node.addEventListener('pointermove', (event) => {
         if (!mode) return
         const live = currentPlacement(item)
+        if (mode === 'rotate') {
+          const angle = Math.atan2(event.clientY - centreY, event.clientX - centreX) * 180 / Math.PI
+          // Accumulate the per-event delta instead of diffing against the start
+          // angle: atan2 wraps at ±180°, and a start-relative diff would swing
+          // the picture backwards the moment the pointer crossed that seam.
+          let delta = angle - lastAngle
+          if (delta > 180) delta -= 360
+          if (delta < -180) delta += 360
+          lastAngle = angle
+          rotAccum += delta
+          // Wrap into -180..180 so the stored value never grows without bound.
+          let next = ((rotAccum + 180) % 360 + 360) % 360 - 180
+          // Snap to the four right angles: getting back to exactly 0 by hand is
+          // otherwise impossible, and 0 is what "复位旋转" is meant to restore.
+          for (const target of [-180, -90, 0, 90, 180]) {
+            if (Math.abs(next - target) <= 4) {
+              next = target
+              break
+            }
+          }
+          live.rot = Math.round(next)
+          applyPlacementStyle(node, live)
+          return
+        }
         const dx = event.clientX - startX
         const dy = event.clientY - startY
         if (mode === 'move') {
@@ -1182,6 +1228,9 @@ window.__ModuleLoader__.load({
       node.style.left = item.x + 'px'
       node.style.top = item.y + 'px'
       node.style.width = Math.round(PLACEMENT_BASE_WIDTH * (item.scale / 100)) + 'px'
+      // Rotation is about the picture's own centre, identical in arrange mode
+      // and once applied, so the hand-placed position never shifts on exit.
+      node.style.transform = item.rot ? 'rotate(' + item.rot + 'deg)' : 'none'
     }
 
     function renderPlacements() {
@@ -1210,23 +1259,41 @@ window.__ModuleLoader__.load({
         node.style.outline = editing ? '1px dashed rgba(255,255,255,.55)' : 'none'
         node.style.cursor = editing ? 'move' : 'default'
         node.style.pointerEvents = editing ? 'auto' : 'none'
-        let handle = node.querySelector('[data-aurora-handle="resize"]')
-        let bin = node.querySelector('[data-aurora-handle="delete"]')
-        if (editing && !handle) {
-          handle = document.createElement('div')
-          handle.dataset.auroraHandle = 'resize'
-          handle.style.cssText = 'position:absolute;right:-6px;bottom:-6px;width:14px;height:14px;border-radius:4px;' +
+        const hasHandles = Boolean(node.querySelector('[data-aurora-handle="resize"]'))
+        if (editing && !hasHandles) {
+          const resize = document.createElement('div')
+          resize.dataset.auroraHandle = 'resize'
+          resize.title = '拖动缩放'
+          resize.style.cssText = 'position:absolute;right:-6px;bottom:-6px;width:14px;height:14px;border-radius:4px;' +
             'background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.35);cursor:nwse-resize'
-          node.appendChild(handle)
-          bin = document.createElement('div')
+          node.appendChild(resize)
+
+          const rotate = document.createElement('div')
+          rotate.dataset.auroraHandle = 'rotate'
+          rotate.textContent = '⟳'
+          rotate.title = '拖动旋转'
+          rotate.style.cssText = 'position:absolute;left:-9px;top:-9px;width:20px;height:20px;border-radius:50%;' +
+            'background:#fff;color:#1a1c22;box-shadow:0 0 0 1px rgba(0,0,0,.35);' +
+            'font:13px/20px sans-serif;text-align:center;cursor:grab'
+          node.appendChild(rotate)
+
+          const reset = document.createElement('div')
+          reset.dataset.auroraHandle = 'rotate-reset'
+          reset.textContent = '⟲'
+          reset.title = '复位旋转'
+          reset.style.cssText = 'position:absolute;left:-9px;bottom:-9px;width:20px;height:20px;border-radius:50%;' +
+            'background:rgba(20,22,28,.92);color:#fff;box-shadow:0 0 0 1px rgba(255,255,255,.3);' +
+            'font:13px/20px sans-serif;text-align:center;cursor:pointer'
+          node.appendChild(reset)
+
+          const bin = document.createElement('div')
           bin.dataset.auroraHandle = 'delete'
           bin.textContent = '×'
           bin.style.cssText = 'position:absolute;right:-8px;top:-8px;width:18px;height:18px;border-radius:50%;' +
             'background:#e2574c;color:#fff;font:12px/18px sans-serif;text-align:center;cursor:pointer'
           node.appendChild(bin)
-        } else if (!editing && handle) {
-          handle.remove()
-          bin?.remove()
+        } else if (!editing && hasHandles) {
+          for (const handle of node.querySelectorAll('[data-aurora-handle]')) handle.remove()
         }
       }
       updateLayoutBar(editing)
@@ -1248,8 +1315,8 @@ window.__ModuleLoader__.load({
           'background:rgba(20,22,28,.92);border:0.5px solid rgba(255,255,255,.14);' +
           'box-shadow:0 8px 24px rgba(0,0,0,.35);font:12px/1.4 system-ui,sans-serif;color:#fff'
         const label = document.createElement('span')
-        label.textContent = '拖动移动 · 右下角缩放 · × 删除'
-        label.style.cssText = 'color:rgba(255,255,255,.7)'
+        label.textContent = '拖动移动 · 右下角缩放 · 左上角 ⟳ 旋转 · ⟲ 复位 · × 删除'
+        label.style.cssText = 'color:rgba(255,255,255,.7);white-space:nowrap'
         const done = document.createElement('button')
         done.textContent = '应用布局'
         done.style.cssText = 'appearance:none;border:0;border-radius:8px;padding:6px 14px;' +
@@ -1836,6 +1903,24 @@ window.__ModuleLoader__.load({
         })
       }
 
+      /** Drop every picture back to 0° without touching position or size. */
+      const resetRotations = () => {
+        let changed = 0
+        for (const item of store.config.placements) {
+          if (!item.rot) continue
+          item.rot = 0
+          changed += 1
+        }
+        if (changed === 0) {
+          showToast('没有需要复位的旋转')
+          return
+        }
+        persistPlacements()
+        renderPlacements()
+        store.notify()
+        showToast('已复位 ' + changed + ' 张图片的旋转')
+      }
+
       const previewOf = (surface) => {
         const entry = pending[surface]
         if (entry === null) return ''
@@ -2003,7 +2088,7 @@ window.__ModuleLoader__.load({
         ),
 
         h(Section, { title: '图片层' },
-          h('div', { className: 'aur-hint' }, '添加后进入布局模式：在页面上直接拖动移动、拖右下角缩放、点右上角 × 删除；只在窗口最大化时显示，位置按会话列比例保存，收起侧边栏会跟着移动'),
+          h('div', { className: 'aur-hint' }, '添加后进入布局模式：拖动移动、右下角缩放、左上角 ⟳ 旋转、⟲ 复位旋转、× 删除；只在窗口最大化时显示，位置按会话列比例保存，收起侧边栏会跟着移动'),
           h(Row, { label: '添加' },
             h('button', {
               className: 'aur-btn',
@@ -2036,6 +2121,10 @@ window.__ModuleLoader__.load({
               },
             }),
             h('button', { className: 'aur-btn', onClick: clearPlacements }, '清除所有图片'),
+          ),
+          h(Row, { label: '旋转' },
+            h('button', { className: 'aur-btn', onClick: resetRotations }, '全部复位'),
+            h('span', { className: 'aur-hint' }, '布局模式里拖左上角 ⟳ 旋转，拖到直角附近会自动吸附'),
           ),
         ),
 
