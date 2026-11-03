@@ -4,3 +4,5 @@ node_modules/
 .npm-cache/
 .git-credentials-tmp
 .gh-cred.cmd
+# 本地交接纪要：含内部路径与发布流程说明，只在本地保留，不进公开仓库
+HANDOVER.md

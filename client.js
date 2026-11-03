@@ -384,10 +384,23 @@ window.__ModuleLoader__.load({
       try {
         record.blurBlob = await blurBlob(imageBlobOf(record) ?? record.render, px)
         record.blurPx = px
+        persistRecord(key, record)
       } catch {
         record.blurBlob = null
         record.blurPx = 0
       }
+    }
+
+    /**
+     * Store the record without its session-only blob URLs: a URL minted by a
+     * previous document is dead after a restart, so a persisted one would win
+     * over the fresh one and the picture would silently stop painting.
+     */
+    function persistRecord(key, record) {
+      if (!record) return
+      const { original, render, width, height, v, blurBlob, blurPx } = record
+      if (!(original instanceof Blob) && !(render instanceof Blob)) return
+      void writeImage(key, { original, render, width, height, v, blurBlob, blurPx })
     }
 
     function buildUrls() {
@@ -547,6 +560,14 @@ window.__ModuleLoader__.load({
 
     const INTERACTIVE = 'button,a,[role="button"],[role="option"],[role="menuitem"],[role="tab"]'
 
+    /**
+     * The composer seat hosts tool approval prompts and composer notices. Those
+     * keep the shell's own colours: an approval card carries a warning border and
+     * a primary (filled) button, and repainting either as glass removed the
+     * border and the button's fill, leaving dark text on a dark pane.
+     */
+    const COMPOSER = '[class*="_composerSeat"],[class*="_composerStack"],[class*="_composerHero"]'
+
     function paints(node) {
       const computed = window.getComputedStyle(node)
       const color = computed.backgroundColor
@@ -576,7 +597,8 @@ window.__ModuleLoader__.load({
           if (rect.height >= 20 && paints(node)) node.setAttribute('data-aurora-glass', 'bubble')
         }
 
-        if (!node.getAttribute('data-aurora-glass') && cls.includes('_card') && !cls.includes('md-code-block')) {
+        if (!node.getAttribute('data-aurora-glass') && cls.includes('_card') && !cls.includes('md-code-block') &&
+          !node.closest(COMPOSER)) {
           const rect = node.getBoundingClientRect()
           if (rect.height >= 32 && rect.height <= 220 && paints(node)) {
             node.setAttribute('data-aurora-glass', 'card')
@@ -585,12 +607,16 @@ window.__ModuleLoader__.load({
             for (const inner of node.querySelectorAll('*')) {
               const innerRect = inner.getBoundingClientRect()
               if (innerRect.height < 16 || innerRect.width < 60) continue
+              // Never strip a control's own fill: a filled button losing its
+              // background keeps its on-brand text colour and turns unreadable.
+              if (inner.closest(INTERACTIVE) || inner.closest('input,textarea,select,[contenteditable]')) continue
               if (paints(inner)) inner.setAttribute('data-aurora-glass', 'card-part')
             }
             const parent = node.parentElement
             if (parent) {
               for (const sibling of parent.children) {
                 if (sibling === node || sibling.getAttribute('data-aurora-glass')) continue
+                if (sibling.closest(INTERACTIVE) || sibling.closest(COMPOSER)) continue
                 const sibRect = sibling.getBoundingClientRect()
                 if (Math.abs(sibRect.height - rect.height) > 4) continue
                 if (paints(sibling)) sibling.setAttribute('data-aurora-glass', 'card-part')
@@ -630,6 +656,7 @@ window.__ModuleLoader__.load({
           if (budget-- <= 0) break
           if (!inColumn(node)) continue
           if (node === column || node.getAttribute('data-aurora-glass')) continue
+          if (node.closest(COMPOSER)) continue
           const rect = node.getBoundingClientRect()
           if (rect.height < 16 || rect.height > 140) continue
           if (rect.width < cb.width * 0.7) continue
@@ -641,6 +668,60 @@ window.__ModuleLoader__.load({
           node.setAttribute('data-aurora-glass', 'bar')
         }
       }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Sidebar text scale                                                  */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * The sidebar's own stylesheet pins every text size in px (14/13/12/10), so
+     * the content font-size token cannot reach it — which is why 字号 used to
+     * change only the conversation. Scale the elements that render text
+     * directly: geometry, icons and row heights stay as the shell drew them.
+     *
+     * The shipped sidebar root is 14px, so the ratio is the user's size / 14.
+     */
+    const SIDEBAR_BASE_FONT = 14
+    let sidebarRatioApplied = 0
+
+    function sidebarTextRatio() {
+      const size = store.config.text.size
+      if (!(size > 0)) return 1
+      return clamp(size / SIDEBAR_BASE_FONT, 0.75, 1.6)
+    }
+
+    /**
+     * `force` re-walks the column so rows that appeared after the last pass get
+     * their own base size. Elements already measured keep their stored base, so
+     * a re-walk costs no layout reads.
+     */
+    function scaleSidebarText(force) {
+      const sidebar = document.querySelector('[data-aurora-surface="sidebar"]')
+      if (!sidebar) return
+      const ratio = sidebarTextRatio()
+      if (!force && ratio === sidebarRatioApplied) return
+      const targets = []
+      for (const element of sidebar.querySelectorAll('*')) {
+        let rendersText = false
+        for (const child of element.childNodes) {
+          if (child.nodeType === 3 && child.textContent && child.textContent.trim()) {
+            rendersText = true
+            break
+          }
+        }
+        if (!rendersText) continue
+        const stored = element.dataset.auroraFont
+        const base = stored ? Number(stored) : parseFloat(window.getComputedStyle(element).fontSize)
+        if (!Number.isFinite(base) || base <= 0) continue
+        if (!stored) element.dataset.auroraFont = String(base)
+        targets.push([element, base])
+      }
+      for (const [element, base] of targets) {
+        if (ratio === 1) element.style.removeProperty('font-size')
+        else element.style.setProperty('font-size', (base * ratio).toFixed(2) + 'px', 'important')
+      }
+      sidebarRatioApplied = ratio
     }
 
     /** `cover` geometry for one box: scaled size and the centring offsets. */
@@ -1123,6 +1204,7 @@ window.__ModuleLoader__.load({
       discoverSurfaces()
       styleElement().textContent = buildCss()
       renderPlacements()
+      scaleSidebarText(false)
     }
 
     /**
@@ -1132,10 +1214,15 @@ window.__ModuleLoader__.load({
      */
     let markTimer = null
     let pendingRoots = []
+    let sidebarDirty = false
 
     function scheduleMarks(additions) {
+      const sidebar = document.querySelector('[data-aurora-surface="sidebar"]')
       for (const node of additions) {
-        if (node.nodeType === 1) pendingRoots.push(node)
+        if (node.nodeType !== 1) continue
+        pendingRoots.push(node)
+        // New session rows carry their own px sizes; they need the scale pass.
+        if (sidebar && (node === sidebar || sidebar.contains(node))) sidebarDirty = true
       }
       if (markTimer !== null) return
       markTimer = window.setTimeout(() => {
@@ -1146,6 +1233,10 @@ window.__ModuleLoader__.load({
           discoverSurfaces()
           for (const root of roots) {
             if (root.isConnected) markWithin(root)
+          }
+          if (sidebarDirty) {
+            sidebarDirty = false
+            scaleSidebarText(true)
           }
         } catch {
           /* never let marking break the page */
@@ -1173,9 +1264,18 @@ window.__ModuleLoader__.load({
       for (const node of document.querySelectorAll('[data-aurora-overlay]')) {
         node.remove()
       }
+      // Leave no inline font sizes behind when the plugin goes away.
+      for (const node of document.querySelectorAll('[data-aurora-font]')) {
+        node.style.removeProperty('font-size')
+        delete node.dataset.auroraFont
+      }
+      sidebarRatioApplied = 0
     }
 
     async function bootstrap() {
+      // Paint the parts that need no picture before touching IndexedDB: glass,
+      // radius, text and the sidebar scale apply within the first frame.
+      renderRuntime()
       for (const key of IMAGE_KEYS) {
         try {
           const stored = await readImage(key)
@@ -1207,8 +1307,22 @@ window.__ModuleLoader__.load({
       }
       releaseUrls()
       buildUrls()
-      for (const key of SURFACE_KEYS) await ensureBlur(key)
       refreshUrls()
+      renderRuntime()
+      // The blur bake stays off the critical path: encoding a 4K WebP takes
+      // seconds, and waiting for it is what made a plugin reload look like the
+      // theme had switched itself off. The picture shows unblurred first, then
+      // swaps to the bake when it lands.
+      for (const key of SURFACE_KEYS) {
+        void ensureBlur(key)
+          .then(() => {
+            refreshUrls()
+            renderRuntime()
+          })
+          .catch(() => {
+            /* a failed bake just leaves the sharp picture */
+          })
+      }
       // Placed pictures live under their own keys, next to the surfaces.
       for (const item of store.config.placements) {
         try {
@@ -1870,6 +1984,7 @@ window.__ModuleLoader__.load({
               unit: 'px',
               onChange: (value) => setDraft((current) => ({ ...current, text: { ...current.text, size: value } })),
             }),
+            h('span', { className: 'aur-hint' }, '侧边栏按同比例缩放'),
           ),
           h(Row, { label: '颜色' },
             TEXT_COLORS.map((color) => h('button', {
