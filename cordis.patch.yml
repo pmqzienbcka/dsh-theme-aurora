@@ -1,0 +1,5 @@
+# Inserts the bundle's single plugin row. The Host half is empty on purpose:
+# all theme work happens in the Client module (`client.js`).
+- insert:
+    - id: theme-aurora
+      name: '@local/dsh-theme-aurora'
