@@ -1211,12 +1211,11 @@ window.__ModuleLoader__.load({
           live.x = Math.round(Math.min(Math.max(originX + dx, -200), window.innerWidth - 40))
           live.y = Math.round(Math.min(Math.max(originY + dy, -200), window.innerHeight - 40))
         } else {
-          // Resize along the picture's own horizontal axis: once it is rotated
-          // or mirrored, dragging the handle right in viewport px is not what
-          // "grow" means, and the handle itself sits on the other side.
+          // Resize along the picture's own horizontal axis: once the box is
+          // rotated, dragging the handle right in viewport px is not what
+          // "grow" means.
           const angle = (rotAccum * Math.PI) / 180
-          const sign = live.flip ? -1 : 1
-          const localDx = (dx * Math.cos(angle) + dy * Math.sin(angle)) * sign
+          const localDx = dx * Math.cos(angle) + dy * Math.sin(angle)
           const width = PLACEMENT_BASE_WIDTH * (originScale / 100)
           const next = ((width + localDx) / PLACEMENT_BASE_WIDTH) * 100
           live.scale = Math.round(Math.min(Math.max(next, 10), 400))
@@ -1237,14 +1236,14 @@ window.__ModuleLoader__.load({
       node.style.left = item.x + 'px'
       node.style.top = item.y + 'px'
       node.style.width = Math.round(PLACEMENT_BASE_WIDTH * (item.scale / 100)) + 'px'
-      // Both transforms act about the picture's own centre and compose the same
-      // way in arrange mode and once applied, so hand-placed positions never
-      // shift on exit. `scaleX(-1)` mirrors in the picture's own frame, which is
-      // what "horizontal flip" means for a picture that is also rotated.
-      const parts = []
-      if (item.rot) parts.push('rotate(' + item.rot + 'deg)')
-      if (item.flip) parts.push('scaleX(-1)')
-      node.style.transform = parts.length > 0 ? parts.join(' ') : 'none'
+      // Rotation belongs to the whole picture box, so the handles turn with it
+      // (that is what makes them read as "the picture's corners").
+      node.style.transform = item.rot ? 'rotate(' + item.rot + 'deg)' : 'none'
+      // The mirror goes on the image alone. Putting it on the box would mirror
+      // the handles too: the rotate/flip buttons would jump to the opposite
+      // side and their glyphs would read backwards.
+      const image = node.querySelector('img')
+      if (image) image.style.transform = item.flip ? 'scaleX(-1)' : 'none'
     }
 
     function renderPlacements() {
