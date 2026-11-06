@@ -2,6 +2,21 @@
 
 给 DSH Web 客户端用的外观插件：背景图、压暗、毛玻璃、字体、圆角，以及可拖动、缩放、旋转、翻转的图片层。
 
+## 安装
+
+插件已发布到 npm，包名 `dsh-theme-aurora`。二选一：
+
+- **图形界面**：设置 → 插件 → 添加插件，输入 `dsh-theme-aurora`。
+- **命令行**：
+
+```powershell
+dsh plugin --profile desktop add dsh-theme-aurora
+```
+
+把 `desktop` 换成你在用的 profile 名（应用内市场给出的命令里用的是 `web`）。装完重启 DSH。
+
+> 不建议用源码方式安装（`add github:pmqzienbcka/dsh-theme-aurora`）：那会装仓库当前 HEAD，可能包含尚未发布到 npm 的改动，只适合开发者自测。
+
 ## 功能
 
 - **背景图片**：会话页与侧边栏可分别设置，支持填充 / 适应 / 拉伸 / 平铺 / 居中五种缩放；未设置侧边栏图片时，一张图连续铺满整个窗口（含标题栏），可整体压暗 0–100%（100% 为纯黑）。
